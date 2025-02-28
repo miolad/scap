@@ -8,78 +8,10 @@
 #define MAX_IOV_SEGS	16
 #define MAX_IOV_CHUNKS  16
 
-/**
-  *  sockmap: main socket map, it will contain every open socket on the system.
-  */
-struct {
-	__uint(type, BPF_MAP_TYPE_SOCKHASH);
-	__type(key, u64);
-	__type(value, u64);
-	__uint(max_entries, 1); /* Will be overwritten by user-space */
-} sockmap SEC(".maps");
-
 struct {
 	__uint(type, BPF_MAP_TYPE_RINGBUF);
 	__uint(max_entries, 1); /* Will be overwritten by user-space */
 } msg_ring SEC(".maps");
-
-/* sock_cntr: incremental counter used as key to `sockmap` */
-u64 sock_cntr = 0;
-
-SEC("iter/tcp")
-int iter_tcp(struct bpf_iter__tcp *ctx)
-{
-	struct sock_common *skc = ctx->sk_common;
-	struct seq_file *seq = ctx->meta->seq;
-	u64 key;
-	long ret;
-
-	if (!skc)
-		goto out;
-
-	if (!bpf_skc_to_tcp_sock(skc))
-		goto out;
-
-	// Bug fixed in 6.4.7
-	key = __sync_fetch_and_add(&sock_cntr, 1);
-	ret = bpf_map_update_elem(&sockmap, &key, skc, BPF_NOEXIST);
-	bpf_printk("[skc=%p] bpf_map_update_elem returned %ld", skc, ret);
-
-out:
-	return 0;
-}
-
-SEC("sockops")
-int add_established_sock(struct bpf_sock_ops *skops)
-{
-	int op = (int)skops->op;
-	u64 key;
-	long ret;
-
-	switch (op) {
-	case BPF_SOCK_OPS_PASSIVE_ESTABLISHED_CB:
-	case BPF_SOCK_OPS_ACTIVE_ESTABLISHED_CB:
-		key = __sync_fetch_and_add(&sock_cntr, 1);
-		ret = bpf_sock_hash_update(skops, &sockmap, &key, BPF_NOEXIST);
-		bpf_printk("[skops=%p] bpf_sock_hash_update returned %ld",
-								skops, ret);
-
-		break;
-
-	default:
-		break;
-	}
-
-	return 0;
-}
-
-SEC("sk_msg")
-int sock_msg(struct sk_msg_md *msg)
-{
-	// bpf_printk("Intercepted msg with size=%lu", msg->size);
-	
-	return SK_PASS;
-}
 
 SEC("fentry/tcp_sendmsg")
 int BPF_PROG(sendmsg, struct sock *sk, struct msghdr *msg, size_t size)
@@ -134,7 +66,8 @@ int BPF_PROG(sendmsg, struct sock *sk, struct msghdr *msg, size_t size)
 			struct scap_msg *rb_msg;
 			uint chunk_size = iov_len - (chunk * MAX_RB_MSG_SIZE);
 
-			chunk_size = chunk_size <= MAX_RB_MSG_SIZE ? chunk_size : MAX_RB_MSG_SIZE;
+			chunk_size = chunk_size <= MAX_RB_MSG_SIZE ? chunk_size
+							: MAX_RB_MSG_SIZE;
 			rb_msg = bpf_ringbuf_reserve(&msg_ring,
 				sizeof(struct scap_msg) + MAX_RB_MSG_SIZE, 0);
 			if (!rb_msg) {
@@ -162,17 +95,4 @@ out:
 	return 0;
 }
 
-// SEC("raw_tp/sched_switch")
-// int util_addsock(struct sock_common **ctx) {
-// 	struct sock *sk = *ctx;
-// 	u64 zero = 0;
-	
-// 	if (bpf_map_update_elem(&sockmap, &zero, sk, BPF_NOEXIST))
-// 		bpf_printk("Error inserting socket into map: %p", *ctx);
-// 	else
-// 		bpf_printk("Socket successfully inserted into map: %p", *ctx);
-	
-// 	return 0;
-// }
-
-char LICENSE[] SEC("license") = "GPL";
+char LICENSE[] SEC("license") = "Dual MIT/GPL";

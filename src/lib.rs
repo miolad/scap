@@ -52,9 +52,6 @@ pub struct MsgMeta {
 
 /// Arguments for Scap initialization
 pub struct ScapArgs {
-    /// Maximum number of sockets to capture traffic from
-    pub max_socks: u32,
-
     /// Size of the ringbuf map to move captured traffic from the
     /// kernel eBPF probes to the user-space controller
     pub ringbuf_size: u32
@@ -65,6 +62,7 @@ impl ScapCtx {
     /// 
     /// # Arguments
     ///  - `args`: Various initialization arguments. See [ScapArgs] for additional documentation
+    ///  - `data_cbk`: Callback to be invoked for all new socket intercepted socket messages
     pub fn init<F>(args: ScapArgs, mut data_cbk: F) -> Result<ScapCtx, InitError>
         where F: 'static + FnMut(MsgMeta, &[u8]) + Send
     {
@@ -76,8 +74,6 @@ impl ScapCtx {
 
         // Sound because `obj` is aligned and properly initialized
         let mut open_skel = skel_builder.open(unsafe { &mut (*ptr).obj })?;
-
-        open_skel.maps.sockmap.set_max_entries(args.max_socks)?;
         open_skel.maps.msg_ring.set_max_entries(args.ringbuf_size)?;
 
         unsafe { (&raw mut (*ptr).skel).write(open_skel.load()?) };
@@ -86,38 +82,12 @@ impl ScapCtx {
         let mut libbpf_obj_skel = unsafe { libbpf_obj_skel.assume_init() };
         let skel = &mut libbpf_obj_skel.skel;
 
-        // skel.progs.sock_msg.attach_sockmap(skel.maps.sockmap.as_fd().as_raw_fd())?;
-
-        // {
-        //     let cgroup_root = find_cgroup_root()
-        //         .map_err(InitError::Cgroup)?;
-        //     let cgroup_file = OpenOptions::new()
-        //         .read(true)
-        //         .write(false)
-        //         .open(cgroup_root)
-        //         .map_err(|e| InitError::Cgroup(format!("Couldn't open cgroup root ({})", e)))?;
-
-        //     skel.links.add_established_sock = Some(
-        //         skel.progs.add_established_sock.attach_cgroup(cgroup_file.as_raw_fd())?
-        //     );
-        // }
-        
-        // {
-        //     let tcp_iter_link = skel.progs.iter_tcp.attach()?;
-        //     let mut iter = Iter::new(&tcp_iter_link)?;
-        //     let mut buf = Vec::new();
-        //     let _ = iter.read_to_end(&mut buf);
-        // }
-
-        // let sock_count = skel.maps.sockmap.keys().count();
-        // println!("Num sockets in sockhash: {sock_count}");
-
         skel.links.sendmsg = Some(skel.progs.sendmsg.attach()?);
 
         let (rb_cleaner_term_tx, mut rb_cleaner_term_rx) = watch::channel(false);
         let rb_handle = MapHandle::try_from(&skel.maps.msg_ring)?;
 
-        let rb_cleaner_fn = move |data: &[u8]| -> i32 {
+        let rb_cleaner_fn = move |data: &[u8]| {
             let data_len = data.len();
             assert!(data_len >= std::mem::size_of::<scap_msg>());
 
@@ -140,7 +110,7 @@ impl ScapCtx {
                 std::slice::from_raw_parts(&raw const msg.data as *const u8, msg.size as _)
             };
 
-            (data_cbk)(MsgMeta {
+            data_cbk(MsgMeta {
                 laddr,
                 raddr,
                 lport: msg.lport,
@@ -201,14 +171,3 @@ impl Drop for ScapCtx {
         }
     }
 }
-
-// fn find_cgroup_root() -> Result<PathBuf, String> {
-//     let statfs = statfs("/sys/fs/cgroup")
-//         .map_err(|e| format!("statfs errno ({})", e))?;
-
-//     match statfs.filesystem_type() {
-//         CGROUP2_SUPER_MAGIC => Ok(PathBuf::from("/sys/fs/cgroup")),
-//         CGROUP_SUPER_MAGIC  => Ok(PathBuf::from("/sys/fs/cgroup/unified")),
-//         _                   => Err(String::from("Non-default cgroup mount point"))
-//     }
-// }

@@ -3,10 +3,9 @@ use scap::ScapArgs;
 
 fn main() -> anyhow::Result<()> {
     let _ctx = scap::ScapCtx::init(ScapArgs {
-        max_socks: 1024,
         ringbuf_size: 1 << 22
     }, |meta, data| {
-        println!("meta={meta:?}, data={data:?}");
+        println!("meta={meta:?}, data={:?}", &data[..10]);
     })?;
 
     let barrier = Arc::new(Barrier::new(2));
