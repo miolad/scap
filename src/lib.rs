@@ -9,6 +9,7 @@ mod common {
     #![allow(unused)]
     include!(concat!(env!("OUT_DIR"), "/common.rs"));
 }
+mod ffi;
 
 use std::{mem::{ManuallyDrop, MaybeUninit}, net::IpAddr, thread::JoinHandle};
 use common::scap_msg;
@@ -25,7 +26,7 @@ pub struct ScapCtx {
     rb_cleaner_term_tx: watch::Sender<bool>
 }
 
-/// Metadata for an intercepted socket message
+/// Metadata for intercepted socket messages
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct MsgMeta {
     /// Local IP address
@@ -42,6 +43,7 @@ pub struct MsgMeta {
 }
 
 /// Arguments for Scap initialization
+#[repr(C)]
 pub struct ScapArgs {
     /// Size of the ringbuf map to move captured traffic from the
     /// kernel eBPF probes to the user-space controller
@@ -51,9 +53,12 @@ pub struct ScapArgs {
 impl ScapCtx {
     /// Initializes the socket capture environment
     /// 
-    /// # Arguments
+    /// ## Arguments
     ///  - `args`: Various initialization arguments. See [ScapArgs] for additional documentation
-    ///  - `data_cbk`: Callback to be invoked for all new socket intercepted socket messages
+    ///  - `data_cbk`: Callback to be invoked for all new intercepted socket messages
+    /// 
+    /// ## Returns
+    /// An opaque context. Dropping the context will perform cleanup.
     pub fn init<F>(args: ScapArgs, mut data_cbk: F) -> Result<ScapCtx, InitError>
         where F: 'static + FnMut(MsgMeta, &[u8]) + Send
     {
@@ -82,8 +87,8 @@ impl ScapCtx {
                     IpAddr::from(unsafe { msg.raddr.in_.s_addr.to_ne_bytes() })
                 ),
                 AF_INET6 => (
-                    IpAddr::from(unsafe { msg.laddr.in6.in6_u.u6_addr8 }),
-                    IpAddr::from(unsafe { msg.raddr.in6.in6_u.u6_addr8 })
+                    IpAddr::from(unsafe { msg.laddr.in6.in6_u.u6_addr8 }).to_canonical(),
+                    IpAddr::from(unsafe { msg.raddr.in6.in6_u.u6_addr8 }).to_canonical()
                 ),
                 _ => unreachable!()
             };

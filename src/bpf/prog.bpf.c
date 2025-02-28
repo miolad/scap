@@ -95,4 +95,4 @@ out:
 	return 0;
 }
 
-char LICENSE[] SEC("license") = "Dual MIT/GPL";
+char LICENSE[] SEC("license") = "GPL";
