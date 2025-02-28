@@ -1,0 +1,6 @@
+{
+    "[c]": {
+        "editor.rulers": [ 79 ],
+        "editor.tabSize": 8
+    }
+}
