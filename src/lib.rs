@@ -10,28 +10,19 @@ mod common {
     include!(concat!(env!("OUT_DIR"), "/common.rs"));
 }
 
-use std::{marker::PhantomPinned, mem::{ManuallyDrop, MaybeUninit}, net::IpAddr, pin::Pin, thread::JoinHandle};
-use bpf::ProgSkel;
+use std::{mem::{ManuallyDrop, MaybeUninit}, net::IpAddr, thread::JoinHandle};
 use common::scap_msg;
 use err::InitError;
-use libbpf_rs::{skel::{OpenSkel, SkelBuilder}, MapHandle, OpenObject, RingBufferBuilder};
+use libbpf_rs::{skel::{OpenSkel, SkelBuilder}, Link, MapHandle, RingBufferBuilder};
 use nix::libc::{AF_INET, AF_INET6};
 use tokio::{io::unix::AsyncFd, sync::watch};
 
 /// Opaque context.
 /// Dropping it triggers automatic clean up.
 pub struct ScapCtx {
-    pinned: ManuallyDrop<Pin<Box<LibbpfObjSkel>>>,
+    probe_link: ManuallyDrop<Link>,
     rb_cleaner_join_handle: Option<JoinHandle<()>>,
     rb_cleaner_term_tx: watch::Sender<bool>
-}
-
-/// Self referential struct containing both the libbpf object and loaded skel.
-/// The latter is coherced to 'static lifetime.
-struct LibbpfObjSkel {
-    obj: MaybeUninit<OpenObject>,
-    skel: ProgSkel<'static>,
-    _pin: PhantomPinned
 }
 
 /// Metadata for an intercepted socket message
@@ -67,22 +58,13 @@ impl ScapCtx {
         where F: 'static + FnMut(MsgMeta, &[u8]) + Send
     {
         let skel_builder = bpf::ProgSkelBuilder::default();
+        let mut obj = MaybeUninit::uninit();
 
-        let mut libbpf_obj_skel = Box::<LibbpfObjSkel>::new_uninit();
-        let ptr = libbpf_obj_skel.as_mut_ptr();
-        unsafe { (&raw mut (*ptr).obj).write(MaybeUninit::uninit()) };
-
-        // Sound because `obj` is aligned and properly initialized
-        let mut open_skel = skel_builder.open(unsafe { &mut (*ptr).obj })?;
+        let mut open_skel = skel_builder.open(&mut obj)?;
         open_skel.maps.msg_ring.set_max_entries(args.ringbuf_size)?;
 
-        unsafe { (&raw mut (*ptr).skel).write(open_skel.load()?) };
-
-        // The struct has been fully initialized
-        let mut libbpf_obj_skel = unsafe { libbpf_obj_skel.assume_init() };
-        let skel = &mut libbpf_obj_skel.skel;
-
-        skel.links.sendmsg = Some(skel.progs.sendmsg.attach()?);
+        let skel = open_skel.load()?;
+        let probe_link = ManuallyDrop::new(skel.progs.sendmsg.attach()?);
 
         let (rb_cleaner_term_tx, mut rb_cleaner_term_rx) = watch::channel(false);
         let rb_handle = MapHandle::try_from(&skel.maps.msg_ring)?;
@@ -149,7 +131,7 @@ impl ScapCtx {
         });
 
         Ok(ScapCtx {
-            pinned: ManuallyDrop::new(libbpf_obj_skel.into()),
+            probe_link,
             rb_cleaner_join_handle: Some(rb_cleaner_join_handle),
             rb_cleaner_term_tx
         })
@@ -158,8 +140,11 @@ impl ScapCtx {
 
 impl Drop for ScapCtx {
     fn drop(&mut self) {
+        // Force dropping the probe link before joining the cleaner thread
+        // to stop the message generation in the kernel.
+        // This is in no way necessary but a little cleaner, imo
         unsafe {
-            ManuallyDrop::drop(&mut self.pinned);
+            ManuallyDrop::drop(&mut self.probe_link);
         }
 
         if self.rb_cleaner_term_tx.send(true).is_ok() {
