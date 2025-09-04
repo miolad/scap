@@ -8,6 +8,7 @@ fn main() {
        .expect("OUT_DIR must be set in build script"));
 
     libbpf_cargo::SkeletonBuilder::new()
+        .clang(option_env!("CLANG_BIN").unwrap_or("clang"))
         .source(SRC)
         .clang_args([
             OsStr::new("-I"),
