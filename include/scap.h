@@ -1,3 +1,6 @@
+#ifndef _SCAP_H_
+#define _SCAP_H_
+
 #include <stdarg.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -25,10 +28,10 @@ typedef struct FfiAddr {
   FfiAddr_Tag tag;
   union {
     struct {
-      in_addr v4;
+      struct in_addr v4;
     };
     struct {
-      in6_addr v6;
+      struct in6_addr v6;
     };
   };
 } FfiAddr;
@@ -84,3 +87,5 @@ void *scap_init(struct ScapArgs args,
  * `ctx` must have been previosly returned by a call to [scap_init]
  */
 void scap_release(void *ctx);
+
+#endif /* _SCAP_H_ */

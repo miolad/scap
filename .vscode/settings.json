@@ -1,6 +1,7 @@
 {
     "[c]": {
         "editor.rulers": [ 79 ],
-        "editor.tabSize": 8
+        "editor.tabSize": 8,
+        "editor.insertSpaces": false
     }
 }
