@@ -13,8 +13,8 @@ struct {
 	__uint(max_entries, 1); /* Will be overwritten by user-space */
 } msg_ring SEC(".maps");
 
-SEC("fentry/tcp_sendmsg")
-int BPF_PROG(sendmsg, struct sock *sk, struct msghdr *msg, size_t size)
+static inline int capture_msg(struct sock *sk, struct msghdr *msg,
+							int maxlen, int dir)
 {
 	struct sock_common *skc = &sk->__sk_common;
 	struct bpf_dynptr rb_dynptr;
@@ -42,10 +42,12 @@ int BPF_PROG(sendmsg, struct sock *sk, struct msghdr *msg, size_t size)
 	msg_hdr.af    = skc->skc_family;
 	msg_hdr.lport = skc->skc_num;
 	msg_hdr.rport = skc->skc_dport;
+	msg_hdr.dir   = dir;
 
 	iov_segs = msg->msg_iter.nr_segs;
 	iov_segs = iov_segs <= MAX_IOV_SEGS ? iov_segs : MAX_IOV_SEGS;
-	for (iov_seg = 0; iov_seg < iov_segs; ++iov_seg) {
+	bpf_for(iov_seg, 0, iov_segs) {
+	// for (iov_seg = 0; iov_seg < iov_segs && maxlen > 0; ++iov_seg) {
 		uint chunk, chunks;
 		struct iovec iov;
 		void *iov_base;
@@ -62,12 +64,14 @@ int BPF_PROG(sendmsg, struct sock *sk, struct msghdr *msg, size_t size)
 		iov_len = iov.iov_len;
 		chunks = (iov_len + MAX_RB_MSG_SIZE - 1) / MAX_RB_MSG_SIZE;
 		chunks = chunks <= MAX_IOV_CHUNKS ? chunks : MAX_IOV_CHUNKS;
-		for (chunk = 0; chunk < chunks; ++chunk) {
+		bpf_for(chunk, 0, chunks) {
+		// for (chunk = 0; chunk < chunks; ++chunk) {
 			struct scap_msg *rb_msg;
 			uint chunk_size = iov_len - (chunk * MAX_RB_MSG_SIZE);
 
 			chunk_size = chunk_size <= MAX_RB_MSG_SIZE ? chunk_size
 							: MAX_RB_MSG_SIZE;
+			chunk_size = chunk_size <= maxlen ? chunk_size : maxlen;
 			rb_msg = bpf_ringbuf_reserve(&msg_ring,
 				sizeof(struct scap_msg) + MAX_RB_MSG_SIZE, 0);
 			if (!rb_msg) {
@@ -78,6 +82,7 @@ int BPF_PROG(sendmsg, struct sock *sk, struct msghdr *msg, size_t size)
 			__builtin_memcpy(rb_msg, &msg_hdr,
 						sizeof(struct scap_msg));
 			rb_msg->size = chunk_size;
+			maxlen -= chunk_size;
 			ret = bpf_probe_read(rb_msg->data, chunk_size, iov_base);
 			if (ret) {
 				bpf_printk("bpf_probe_read failed with %lu", ret);
@@ -85,13 +90,31 @@ int BPF_PROG(sendmsg, struct sock *sk, struct msghdr *msg, size_t size)
 			}
 
 			bpf_ringbuf_submit(rb_msg, 0);
+			if (maxlen == 0) break;
 			continue;
 discard:
 			bpf_ringbuf_discard(rb_msg, 0);
 		}
+		if (maxlen == 0) break;
 	}
 
 out:
+	return 0;
+}
+
+SEC("fentry/tcp_sendmsg")
+int BPF_PROG(sendmsg, struct sock *sk, struct msghdr *msg, size_t size)
+{
+	return capture_msg(sk, msg, (1 << 22), 1);
+}
+
+SEC("fexit/tcp_recvmsg")
+int BPF_PROG(recvmsg, struct sock *sk, struct msghdr *msg, size_t len,
+					int flags, int *addr_len, int ret)
+{
+	if (ret > 0)
+		return capture_msg(sk, msg, ret, 0);
+
 	return 0;
 }
 

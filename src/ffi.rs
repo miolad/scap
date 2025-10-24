@@ -35,7 +35,9 @@ pub struct FfiMsgMeta {
     pub rport: u16,
     /// Socket's Address Family, either `AF_INET` for IPv4 or `AF_INET6` for IPv6.
     /// Note that dual stack sockets will be marked as AF_INET6 but can carry IPv4 traffic, too.
-    pub af: u16
+    pub af: u16,
+    /// Direction of the message, either 0 for recv or 1 for send
+    pub dir: u16
 }
 
 impl From<MsgMeta> for FfiMsgMeta {
@@ -45,7 +47,8 @@ impl From<MsgMeta> for FfiMsgMeta {
             raddr: value.raddr.into(),
             lport: value.lport,
             rport: value.rport,
-            af: value.af
+            af: value.af,
+            dir: value.dir
         }
     }
 }

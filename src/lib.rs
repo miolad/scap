@@ -21,7 +21,8 @@ use tokio::{io::unix::AsyncFd, sync::watch};
 /// Opaque context.
 /// Dropping it triggers automatic clean up.
 pub struct ScapCtx {
-    probe_link: ManuallyDrop<Link>,
+    rcv_probe_link: ManuallyDrop<Link>,
+    snd_probe_link: ManuallyDrop<Link>,
     rb_cleaner_join_handle: Option<JoinHandle<()>>,
     rb_cleaner_term_tx: watch::Sender<bool>
 }
@@ -39,7 +40,9 @@ pub struct MsgMeta {
     pub rport: u16,
     /// Socket's Address Family, either `AF_INET` for IPv4 or `AF_INET6` for IPv6.
     /// Note that dual stack sockets will be marked as AF_INET6 but can carry IPv4 traffic, too.
-    pub af: u16
+    pub af: u16,
+    /// Direction of the message, either 0 for recv or 1 for send
+    pub dir: u16
 }
 
 /// Arguments for Scap initialization
@@ -69,7 +72,8 @@ impl ScapCtx {
         open_skel.maps.msg_ring.set_max_entries(args.ringbuf_size)?;
 
         let skel = open_skel.load()?;
-        let probe_link = ManuallyDrop::new(skel.progs.sendmsg.attach()?);
+        let rcv_probe_link = ManuallyDrop::new(skel.progs.recvmsg.attach()?);
+        let snd_probe_link = ManuallyDrop::new(skel.progs.sendmsg.attach()?);
 
         let (rb_cleaner_term_tx, mut rb_cleaner_term_rx) = watch::channel(false);
         let rb_handle = MapHandle::try_from(&skel.maps.msg_ring)?;
@@ -102,7 +106,8 @@ impl ScapCtx {
                 raddr,
                 lport: msg.lport,
                 rport: u16::from_be(msg.rport),
-                af: msg.af
+                af: msg.af,
+                dir: msg.dir
             }, data);
 
             0
@@ -136,7 +141,8 @@ impl ScapCtx {
         });
 
         Ok(ScapCtx {
-            probe_link,
+            rcv_probe_link,
+            snd_probe_link,
             rb_cleaner_join_handle: Some(rb_cleaner_join_handle),
             rb_cleaner_term_tx
         })
@@ -149,7 +155,8 @@ impl Drop for ScapCtx {
         // to stop the message generation in the kernel.
         // This is in no way necessary but a little cleaner, imo
         unsafe {
-            ManuallyDrop::drop(&mut self.probe_link);
+            ManuallyDrop::drop(&mut self.rcv_probe_link);
+            ManuallyDrop::drop(&mut self.snd_probe_link);
         }
 
         if self.rb_cleaner_term_tx.send(true).is_ok() {

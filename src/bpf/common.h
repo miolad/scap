@@ -15,6 +15,7 @@ struct scap_msg {
 	u16 lport;
 	u16 rport;
 	u16 af;
+	u16 dir;
 
 	u8 data[];
 };
